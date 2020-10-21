@@ -13,6 +13,12 @@ This directory contains a Dockerfile to convert files to PDF using [LibreOffice]
 $ docker run -d --rm -p 127.0.0.1:8080:8080/tcp --tmpfs /tmp ghcr.io/ymmt2005/pdf-converter
 ```
 
+Try it using `curl`:
+
+```console
+$ curl -o result.pdf -F file=@/path/to/your.pptx http://localhost:8080/convert
+```
+
 See [API.md](API.md) for the HTTP API.
 
 ### Run LibreOffice directly
@@ -20,7 +26,8 @@ See [API.md](API.md) for the HTTP API.
 To convert `$HOME/work/foo.pptx` directly,
 
 ```console
-$ docker run -it --user $(id -u) --rm --tmpfs /tmp -v $HOME/work:/home/libre \
+$ sudo chown -R 10000:10000 $HOME/work
+$ docker run -it --rm --tmpfs /tmp -v $HOME/work:/home/libre \
     ghcr.io/ymmt2005/pdf-converter soffice --headless --convert-to pdf /home/libre/foo.pptx
 ```
 

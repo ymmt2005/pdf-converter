@@ -9,6 +9,7 @@ import (
 	"github.com/cybozu-go/well"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
+	"github.com/ymmt2005/pdf-converter/converter"
 )
 
 var config struct {
@@ -37,7 +38,13 @@ var rootCmd = &cobra.Command{
 
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
-		mux.Handle("/convert", NewPDFConverter(dir, config.maxLength, config.maxConvertTime, config.maxParallel))
+		mux.Handle("/convert", NewConvertHandler(
+			converter.NewConverter(),
+			dir,
+			config.maxLength,
+			config.maxConvertTime,
+			config.maxParallel,
+		))
 		s := well.HTTPServer{
 			Server: &http.Server{
 				Addr:    config.bindAddr,

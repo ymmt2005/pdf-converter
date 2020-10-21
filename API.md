@@ -49,6 +49,10 @@ Expected HTTP responses are:
 
     The request body was too large.
 
+- 415 Unsupported Media Type
+
+    The `file` (actually, the filename) is not supported for conversion.
+
 - 429 Too Many Requests
 
     There were too many requests beyond the server capacity.
