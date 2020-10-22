@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/cybozu-go/log"
 	"github.com/ymmt2005/pdf-converter/converter"
 )
 
@@ -32,6 +34,11 @@ type pdfConverter struct {
 	parallelism chan struct{}
 }
 
+func sendError(w http.ResponseWriter, msg string, code int) {
+	requestsTotal.WithLabelValues(strconv.Itoa(code)).Inc()
+	http.Error(w, msg, code)
+}
+
 func (c *pdfConverter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if c.parallelism != nil {
 		select {
@@ -40,40 +47,40 @@ func (c *pdfConverter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				<-c.parallelism
 			}()
 		default:
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			sendError(w, "too many requests", http.StatusTooManyRequests)
 			return
 		}
 	}
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "only POST is allowed", http.StatusMethodNotAllowed)
+		sendError(w, "only POST is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	lengthStr := r.Header.Get("Content-Length")
 	if len(lengthStr) == 0 {
-		http.Error(w, "content-length header is required", http.StatusLengthRequired)
+		sendError(w, "content-length header is required", http.StatusLengthRequired)
 		return
 	}
 	length, err := strconv.ParseInt(lengthStr, 10, 64)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("bad length: %s: %v", lengthStr, err), http.StatusBadRequest)
+		sendError(w, fmt.Sprintf("bad length: %s: %v", lengthStr, err), http.StatusBadRequest)
 		return
 	}
 	if length > c.maxLength {
-		http.Error(w, fmt.Sprintf("the file size exceeds the limit %d", c.maxLength), http.StatusRequestEntityTooLarge)
+		sendError(w, fmt.Sprintf("the file size exceeds the limit %d", c.maxLength), http.StatusRequestEntityTooLarge)
 		return
 	}
 
 	mr, err := r.MultipartReader()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("the body is not multipart: %v", err), http.StatusBadRequest)
+		sendError(w, fmt.Sprintf("the body is not multipart: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	var filePart *multipart.Part
 	for p, err := mr.NextPart(); err != io.EOF; p, err = mr.NextPart() {
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			sendError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -85,25 +92,30 @@ func (c *pdfConverter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if filePart == nil {
-		http.Error(w, "no file", http.StatusBadRequest)
+		sendError(w, "no file", http.StatusBadRequest)
 		return
 	}
 	defer filePart.Close()
 
-	filename := filepath.Base(filePart.FileName())
+	filename := filepath.Base(string([]rune(filePart.FileName())))
 	if len(filename) == 0 {
-		http.Error(w, "no filename", http.StatusBadRequest)
+		sendError(w, "no filename", http.StatusBadRequest)
 		return
 	}
 
 	if !c.cvt.Supported(filename) {
-		http.Error(w, "unsupported file type", http.StatusUnsupportedMediaType)
+		sendError(w, "unsupported file type", http.StatusUnsupportedMediaType)
 		return
 	}
 
-	tmpdir, err := ioutil.TempDir(c.dir, "")
+	extension := strings.ToLower(filepath.Ext(filename))
+	if len(extension) > 0 {
+		extension = extension[1:]
+	}
+
+	tmpdir, err := ioutil.TempDir(c.dir, "tmp")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer os.RemoveAll(tmpdir)
@@ -111,31 +123,47 @@ func (c *pdfConverter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	filePath := filepath.Join(tmpdir, filename)
 	f, err := os.Create(filePath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, filePart); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	srcLen, err := io.Copy(f, filePart)
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	begin := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), c.maxDuration)
 	defer cancel()
 	converted, err := c.cvt.Convert(ctx, filePath)
+
+	conversionTotal.WithLabelValues(extension).Inc()
+	conversionSeconds.WithLabelValues(extension).Observe(time.Since(begin).Seconds())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		conversionFailed.WithLabelValues(extension).Inc()
+		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	convertedR, err := os.Open(converted)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer convertedR.Close()
 
 	w.Header().Set("Content-Type", "application/pdf")
-	io.Copy(w, convertedR)
+	outputLen, err := io.Copy(w, convertedR)
+	if err != nil {
+		log.Warn("failed to send PDF body", map[string]interface{}{
+			"filename":  filename,
+			log.FnError: err,
+		})
+	}
+
+	requestsTotal.WithLabelValues(strconv.Itoa(http.StatusOK)).Inc()
+	sourceBytes.WithLabelValues(extension).Observe(float64(srcLen))
+	outputBytes.WithLabelValues(extension).Observe(float64(outputLen))
 }
