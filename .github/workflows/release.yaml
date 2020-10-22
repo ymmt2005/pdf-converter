@@ -1,0 +1,44 @@
+name: Release
+on:
+  push:
+    tags:
+    - 'v*'
+defaults:
+  run:
+    working-directory: v2
+env:
+  go-version: 1.15
+jobs:
+  image:
+    name: Push container image
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: ${{ env.go-version }}
+      - run: make image TAG=${GITHUB_REF#refs/tags/v}
+      - name: Login to ghcr.io
+        run: echo ${{ secrets.CR_PAT }} | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
+      - name: Login to quay.io
+        run: echo ${{ secrets.QUAY_BOT }} | docker login quay.io -u="ymmt2005+ymmt2005_bot" --password-stdin
+      - run: docker push ghcr.io/ymmt2005/pdf-converter:${GITHUB_REF#refs/tags/v}
+      - run: docker push quay.io/ymmt2005/pdf-converter:${GITHUB_REF#refs/tags/v}
+  release:
+    name: Release on GitHub
+    needs: image
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: |
+            See [CHANGELOG.md](./CHANGELOG.md) for details.
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}

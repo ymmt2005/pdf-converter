@@ -1,0 +1,48 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches:
+      - 'main'
+env:
+  go-version: 1.15
+jobs:
+  test:
+    name: Small test
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: ${{ env.go-version }}
+      - run: make test
+  e2e:
+    name: End-to-end Test
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: ${{ env.go-version }}
+      - run: make image
+      - name: Start the conversion server
+        run: docker run -d --rm -p 127.0.0.1:8080:8080/tcp --tmpfs /tmp ghcr.io/ymmt2005/pdf-converter:latest
+      - name: Convert a PowerPoint file
+        run: curl -f -o result.pdf -F file=@testdata/test.pptx http://localhost:8080/convert
+  deploy:
+    name: Deploy the latest image
+    runs-on: ubuntu-20.04
+    needs: [test, e2e]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: ${{ env.go-version }}
+      - run: make image
+      - name: Login to ghcr.io
+        run: echo ${{ secrets.CR_PAT }} | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
+      - name: Login to quay.io
+        run: echo ${{ secrets.QUAY_BOT }} | docker login quay.io -u="ymmt2005+ymmt2005_bot" --password-stdin
+      - run: docker push ghcr.io/ymmt2005/pdf-converter:latest
+      - run: docker push quay.io/ymmt2005/pdf-converter:latest
