@@ -15,6 +15,7 @@ import (
 	"github.com/ymmt2005/pdf-converter/converter"
 )
 
+// NewConvertHandler creates an http.Handler for /convert API
 func NewConvertHandler(cvt converter.Converter, dir string, maxLength int64, maxConvertTime time.Duration, maxParallel int) http.Handler {
 	var pCh chan struct{}
 	if maxParallel > 0 {

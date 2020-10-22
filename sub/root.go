@@ -29,11 +29,18 @@ var rootCmd = &cobra.Command{
 
 		dir := args[0]
 		fi, err := os.Stat(dir)
-		if err != nil {
+		switch {
+		case err == nil:
+			if !fi.IsDir() {
+				return fmt.Errorf("%s is not a directory", dir)
+			}
+		case os.IsNotExist(err):
+			err = os.MkdirAll(dir, 0755)
+			if err != nil {
+				return err
+			}
+		default:
 			return err
-		}
-		if !fi.IsDir() {
-			return fmt.Errorf("%s is not a directory", dir)
 		}
 
 		mux := http.NewServeMux()
