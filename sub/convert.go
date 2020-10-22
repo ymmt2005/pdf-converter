@@ -108,7 +108,7 @@ func (c *pdfConverter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(tmpdir)
 
-	filePath := filepath.Join(c.dir, filename)
+	filePath := filepath.Join(tmpdir, filename)
 	f, err := os.Create(filePath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
