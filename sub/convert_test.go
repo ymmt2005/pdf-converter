@@ -3,15 +3,21 @@ package sub
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"io/ioutil"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	promtest "github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 )
 
 type hideR struct {
@@ -120,6 +126,13 @@ func TestConvertHandler(t *testing.T) {
 			nil,
 		},
 		{
+			"fail",
+			makeRequest(http.MethodPost, s.URL, "file", "fail.pptx", []byte("dummy"), false),
+			http.StatusInternalServerError,
+			"",
+			nil,
+		},
+		{
 			"ok",
 			makeRequest(http.MethodPost, s.URL, "file", "t.pptx", []byte("dummy"), false),
 			http.StatusOK,
@@ -158,11 +171,10 @@ func TestConvertHandler(t *testing.T) {
 
 	cvtHandler := NewConvertHandler(mockConverter{true}, dir, 1<<10, 1*time.Second, 2)
 	ss := httptest.NewServer(cvtHandler)
-	defer ss.Close()
-	go ss.Client().Do(makeRequest(http.MethodPost, ss.URL, "file", "a.pptx", []byte("foo"), false))
-	go ss.Client().Do(makeRequest(http.MethodPost, ss.URL, "file", "a.pptx", []byte("foo"), false))
+	go ss.Client().Do(makeRequest(http.MethodPost, ss.URL, "file", "a.docx", []byte("foo"), false))
+	go ss.Client().Do(makeRequest(http.MethodPost, ss.URL, "file", "a.docx", []byte("foo"), false))
 	time.Sleep(10 * time.Millisecond)
-	resp, err := ss.Client().Do(makeRequest(http.MethodPost, ss.URL, "file", "a.pptx", []byte("foo"), false))
+	resp, err := ss.Client().Do(makeRequest(http.MethodPost, ss.URL, "file", "a.docx", []byte("foo"), false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +187,100 @@ func TestConvertHandler(t *testing.T) {
 		t.Error(`resp.StatusCode != http.StatusTooManyRequests`, resp.StatusCode)
 		t.Log(string(data))
 	}
+	ss.Close()
+
+	// test that the working directory is empty after conversion
+	fis, err := ioutil.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fi := range fis {
+		if strings.HasPrefix(fi.Name(), "tmp") {
+			t.Error("working directory is not empty:", fi.Name())
+		}
+	}
+
+	// test metrics
+	problems, err := promtest.GatherAndLint(prometheus.DefaultGatherer)
+	if err != nil {
+		t.Error(err, problems)
+	}
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := findMetric(mfs, "pdf_converter_requests_total", map[string]string{"status": "200"})
+	if m == nil {
+		t.Fatal("no pdf_converter_requests_total[status=200]")
+	}
+	if int(*m.Counter.Value) != 3 {
+		t.Error("pdf_converter_requests_total[status=200] != 3", int(*m.Counter.Value))
+	}
+
+	m = findMetric(mfs, "pdf_converter_requests_total", map[string]string{"status": "413"})
+	if m == nil {
+		t.Fatal("no pdf_converter_requests_total[status=413]")
+	}
+	if int(*m.Counter.Value) != 1 {
+		t.Error("pdf_converter_requests_total[status=413] != 1", int(*m.Counter.Value))
+	}
+
+	m = findMetric(mfs, "pdf_converter_conversion_total", map[string]string{"extension": "pptx"})
+	if m == nil {
+		t.Fatal("no pdf_converter_conversion_total[extension=pptx]")
+	}
+	if int(*m.Counter.Value) != 2 {
+		t.Error("pdf_converter_conversion_total[extension=pptx] != 2", int(*m.Counter.Value))
+	}
+
+	m = findMetric(mfs, "pdf_converter_conversion_total", map[string]string{"extension": "docx"})
+	if m == nil {
+		t.Fatal("no pdf_converter_conversion_total[extension=docx]")
+	}
+	if int(*m.Counter.Value) != 2 {
+		t.Error("pdf_converter_conversion_total[extension=docx] != 2", int(*m.Counter.Value))
+	}
+
+	m = findMetric(mfs, "pdf_converter_conversion_failed", map[string]string{"extension": "pptx"})
+	if m == nil {
+		t.Fatal("no pdf_converter_conversion_failed[extension=pptx]")
+	}
+	if int(*m.Counter.Value) != 1 {
+		t.Error("pdf_converter_conversion_failed[extension=pptx] != 1", int(*m.Counter.Value))
+	}
+
+	m = findMetric(mfs, "pdf_converter_conversion_duration_seconds", map[string]string{"extension": "pptx"})
+	if m == nil {
+		t.Fatal("no pdf_converter_conversion_duration_seconds[extension=pptx]")
+	}
+	if int(m.Histogram.GetSampleCount()) != 2 {
+		t.Error("pdf_converter_conversion_duration_seconds_count[extension=pptx] != 2", int(m.Histogram.GetSampleCount()))
+	}
+
+	m = findMetric(mfs, "pdf_converter_conversion_duration_seconds", map[string]string{"extension": "docx"})
+	if m == nil {
+		t.Fatal("no pdf_converter_conversion_duration_seconds[extension=docx]")
+	}
+	if m.Histogram.GetSampleSum() < 2 {
+		t.Error("pdf_converter_conversion_duration_seconds_sum[extension=docx] < 2.0", m.Histogram.GetSampleSum())
+	}
+
+	m = findMetric(mfs, "pdf_converter_conversion_source_bytes", map[string]string{"extension": "docx"})
+	if m == nil {
+		t.Fatal("no pdf_converter_conversion_source_bytes[extension=docx]")
+	}
+	if int(m.Histogram.GetSampleSum()) != 6 {
+		t.Error("pdf_converter_conversion_source_bytes_sum[extension=docx] != 6", int(m.Histogram.GetSampleSum()))
+	}
+
+	m = findMetric(mfs, "pdf_converter_conversion_output_bytes", map[string]string{"extension": "docx"})
+	if m == nil {
+		t.Fatal("no pdf_converter_conversion_output_bytes[extension=docx]")
+	}
+	if int(m.Histogram.GetSampleSum()) != 12 { // 2 * sizeof(testdata/converted.pdf)
+		t.Error("wrong pdf_converter_conversion_output_bytes_sum[extension=docx]", int(m.Histogram.GetSampleSum()))
+	}
 }
 
 type mockConverter struct {
@@ -182,12 +288,51 @@ type mockConverter struct {
 }
 
 func (c mockConverter) Supported(filename string) bool {
-	return strings.HasSuffix(filename, ".pptx")
+	switch filepath.Ext(filename) {
+	case ".pptx", ".docx":
+		return true
+	}
+	return false
 }
 
 func (c mockConverter) Convert(ctx context.Context, filePath string) (convertedPath string, err error) {
+	if filepath.Base(filePath) == "fail.pptx" {
+		return "", errors.New("fail")
+	}
 	if c.wait {
 		<-ctx.Done()
 	}
 	return "testdata/converted.pdf", nil
+}
+
+func findMetric(mfs []*dto.MetricFamily, name string, labels map[string]string) *dto.Metric {
+	for _, mf := range mfs {
+		if mf.Name == nil {
+			continue
+		}
+		if *mf.Name != name {
+			continue
+		}
+		for _, m := range mf.Metric {
+			if hasLabels(m.Label, labels) {
+				return m
+			}
+		}
+	}
+	return nil
+}
+
+func hasLabels(pairs []*dto.LabelPair, labels map[string]string) bool {
+	t := make(map[string]string)
+	for _, pair := range pairs {
+		t[pair.GetName()] = pair.GetValue()
+	}
+
+	for k, v := range labels {
+		if t[k] != v {
+			return false
+		}
+	}
+
+	return true
 }
