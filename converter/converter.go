@@ -129,11 +129,16 @@ func (converter) Supported(filename string) bool {
 
 func (converter) Convert(ctx context.Context, filePath string) (convertedPath string, err error) {
 	dir := filepath.Dir(filePath)
+	profDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
 	err = well.CommandContext(ctx,
 		libreOffice,
 		"--headless",
 		"--convert-to", "pdf",
 		"--outdir", dir,
+		"-env:UserInstallation=file://"+profDir,
 		filePath).Run()
 	if err != nil {
 		return "", err
