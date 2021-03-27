@@ -16,7 +16,7 @@ jobs:
           go-version: ${{ env.go-version }}
       - run: make image TAG=${GITHUB_REF#refs/tags/v}
       - name: Login to ghcr.io
-        run: echo ${{ secrets.CR_PAT }} | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
       - name: Login to quay.io
         run: echo ${{ secrets.QUAY_BOT }} | docker login quay.io -u="ymmt2005+ymmt2005_bot" --password-stdin
       - run: docker push ghcr.io/ymmt2005/pdf-converter:${GITHUB_REF#refs/tags/v}
